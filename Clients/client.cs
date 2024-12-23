@@ -12,6 +12,7 @@ using System.Threading.Tasks;
 using System.Windows.Forms;
 using System.Xml.Linq;
 using Microsoft.VisualBasic;
+using NAudio.Wave;
 
 namespace Clients
 {
@@ -37,6 +38,12 @@ namespace Clients
         // Dictionary lưu trữ thông tin các nhóm và thành viên của nhóm
         private Dictionary<string, List<string>> _groups = new Dictionary<string, List<string>>();
 
+        private bool _isRecording = false; // Trạng thái ghi âm
+        private NAudio.Wave.WaveInEvent _waveIn;
+        private NAudio.Wave.WaveFileWriter _waveWriter;
+        private string _audioFilePath; // Đường dẫn file ghi âm
+
+    
 
         public Form1()
         {
@@ -246,6 +253,11 @@ namespace Clients
             {
                 HandleGroupMessage(message);
             }
+            else if (message.StartsWith("VOICE|"))
+            {
+                HandleVoiceReception(message);
+            }
+
             else
             {
                 AppendMessage($"Unknown message: {message}");
@@ -309,7 +321,7 @@ namespace Clients
             }
         }
 
-       
+
 
         private void HandleImageReception(string header)
         {
@@ -595,7 +607,7 @@ namespace Clients
                 }
             }
         }
-private void UpdateClientList(string[] clients)
+        private void UpdateClientList(string[] clients)
         {
             foreach (var client in clients)
             {
@@ -1003,6 +1015,7 @@ private void UpdateClientList(string[] clients)
                 _stream.Write(fileBytes, totalBytesSent, bytesToSend);
                 totalBytesSent += bytesToSend;
             }
+            AppendMessage($"File sent successfully. Total bytes: {fileBytes.Length}");
         }
         private void SendFile(string filePath)
         {
@@ -1186,7 +1199,7 @@ private void UpdateClientList(string[] clients)
             {
                 AppendMessage("Error: Group not found.");
             }
-        }     
+        }
         public static string ShowInputDialog(string text, string caption)
         {
             Form prompt = new Form()
@@ -1400,10 +1413,270 @@ private void UpdateClientList(string[] clients)
             }
         }
 
-      
+        // VOICE 
+        private void btnVoice_Click_1(object sender, EventArgs e)
+        {
+            if (!_isRecording)
+            {
+                // Bắt đầu ghi âm
+                txtMessage.Text = "Recording started...";
+                StartRecording();
+                btnVoice.Text = "Stop Recording"; // Thay đổi text trên nút
+                btnVoice.BackColor = Color.LightCoral; // Cập nhật màu nút
+            }
+            else
+            {
+                // Dừng ghi âm
+                StopRecording();
+                btnVoice.Text = "Start Recording"; // Reset text trên nút
+                btnVoice.BackColor = Color.LightGreen; // Cập nhật màu nút
 
+                // Gửi file ghi âm
+                SendVoiceMessage();
+
+                // Xóa trạng thái ghi âm khỏi ô nhập tin nhắn
+                txtMessage.Clear();
+            }
+        }
+
+
+        private void StartRecording()
+        {
+            try
+            {
+                // Đường dẫn lưu file ghi âm tạm thời
+                _audioFilePath = Path.Combine(Path.GetTempPath(), "recorded_audio.wav");
+
+                // Cấu hình ghi âm
+                _waveIn = new NAudio.Wave.WaveInEvent();
+                _waveIn.WaveFormat = new NAudio.Wave.WaveFormat(44100, 1); // 44.1kHz, Mono
+                _waveWriter = new NAudio.Wave.WaveFileWriter(_audioFilePath, _waveIn.WaveFormat);
+
+                // Lắng nghe dữ liệu âm thanh từ microphone
+                _waveIn.DataAvailable += (s, a) =>
+                {
+                    _waveWriter.Write(a.Buffer, 0, a.BytesRecorded);
+                    _waveWriter.Flush();
+                };
+
+                // Bắt đầu ghi âm
+                _waveIn.StartRecording();
+                _isRecording = true; // Cập nhật trạng thái
+
+                AppendMessage("Recording started...");
+            }
+            catch (Exception ex)
+            {
+                AppendMessage($"Error starting recording: {ex.Message}");
+            }
+        }
+
+        private void StopRecording()
+        {
+            try
+            {
+                // Dừng ghi âm và giải phóng tài nguyên
+                _waveIn?.StopRecording();
+                _waveIn?.Dispose();
+                _waveWriter?.Dispose();
+
+                _isRecording = false; // Cập nhật trạng thái
+
+                AppendMessage("Recording stopped.");
+            }
+            catch (Exception ex)
+            {
+                AppendMessage($"Error stopping recording: {ex.Message}");
+            }
+        }
+        private void SendAudioMessage(string filePath)
+        {
+            try
+            {
+                byte[] audioBytes = File.ReadAllBytes(filePath);
+                string fileName = Path.GetFileName(filePath);
+
+                if (!string.IsNullOrEmpty(_currentChatClient))
+                {
+                    // Gửi audio tới cá nhân
+                    string header = $"VOICE|{_currentChatClient}|{fileName}|{audioBytes.Length}";
+                    SendMessage(header);
+                    SendFileData(audioBytes);
+                }
+                else if (!string.IsNullOrEmpty(_currentGroup))
+                {
+                    // Gửi audio tới nhóm
+                    string header = $"VOICE|{_currentGroup}|{fileName}|{audioBytes.Length}";
+                    SendMessage(header);
+                    SendFileData(audioBytes);
+                }
+                else
+                {
+                    MessageBox.Show("Please select a recipient or group to send the voice message.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+            }
+            catch (Exception ex)
+            {
+                AppendMessage($"Error sending audio message: {ex.Message}");
+            }
+        }
+
+        private void SendVoiceMessage()
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(_audioFilePath) || !File.Exists(_audioFilePath))
+                {
+                    AppendMessage("No audio file found to send.");
+                    return;
+                }
+
+                byte[] fileBytes = File.ReadAllBytes(_audioFilePath); // Đọc file ghi âm
+                string fileName = Path.GetFileName(_audioFilePath);   // Tên file
+
+                if (!string.IsNullOrEmpty(_currentChatClient))
+                {
+                    // Gửi file ghi âm đến client cá nhân
+                    string header = $"VOICE|{_currentChatClient}|{fileName}|{fileBytes.Length}";
+                    SendMessage(header); // Gửi header
+                    SendFileData(fileBytes); // Gửi dữ liệu file
+
+                    // Thêm file vào lịch sử tin nhắn của chính mình
+                    AddPlayButton(_audioFilePath, "You");
+                }
+                else if (!string.IsNullOrEmpty(_currentGroup))
+                {
+                    // Gửi file ghi âm đến nhóm
+                    string header = $"VOICE|{_currentGroup}|{fileName}|{fileBytes.Length}";
+                    SendMessage(header); // Gửi header
+                    SendFileData(fileBytes); // Gửi dữ liệu file
+
+                    // Thêm file vào lịch sử tin nhắn nhóm
+                    AddPlayButton(_audioFilePath, "You");
+                }
+                else
+                {
+                    MessageBox.Show("Please select a recipient or group to send the voice message.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+
+                // Xóa file ghi âm sau khi gửi
+                File.Delete(_audioFilePath);
+            }
+            catch (Exception ex)
+            {
+                AppendMessage($"Error sending voice message: {ex.Message}");
+            }
+        }
+
+
+        private void HandleVoiceReception(string header)
+        {
+            try
+            {
+                string[] parts = header.Split('|');
+                if (parts.Length < 4) return;
+
+                string sender = parts[1];
+                string fileName = parts[2];
+                int fileSize = int.Parse(parts[3]);
+
+                // Nhận dữ liệu file audio
+                byte[] audioBytes = new byte[fileSize];
+                ReceiveFileData(audioBytes);
+
+                // Lưu file tạm
+                string tempPath = Path.Combine(Path.GetTempPath(), fileName);
+                File.WriteAllBytes(tempPath, audioBytes);
+
+                // Hiển thị nút phát file âm thanh
+                AddPlayButton(tempPath, sender);
+            }
+            catch (Exception ex)
+            {
+                AppendMessage($"Error receiving voice message: {ex.Message}");
+            }
+        }
+
+
+
+        private void AddPlayButton(string filePath, string sender)
+        {
+            txtLog.Invoke(new Action(() =>
+            {
+                Label label = new Label
+                {
+                    Text = $"[{DateTime.Now:HH:mm:ss}] {sender} sent a voice message:",
+                    AutoSize = true,
+                    Margin = new Padding(5),
+                    BackColor = Color.LightGray
+                };
+                txtLog.Controls.Add(label);
+
+                Button playButton = new Button
+                {
+                    Text = "Play",
+                    Tag = filePath,
+                    Margin = new Padding(5)
+                };
+                playButton.Click += (s, e) =>
+                {
+                    string path = (s as Button).Tag.ToString();
+                    PlayAudio(path);
+                };
+                txtLog.Controls.Add(playButton);
+
+                txtLog.ScrollControlIntoView(playButton);
+            }));
+        }
+
+
+        private void PlayAudioFile(string filePath)
+        {
+            try
+            {
+                using (var audioFile = new NAudio.Wave.AudioFileReader(filePath))
+                using (var outputDevice = new NAudio.Wave.WaveOutEvent())
+                {
+                    outputDevice.Init(audioFile);
+                    outputDevice.Play();
+                    while (outputDevice.PlaybackState == NAudio.Wave.PlaybackState.Playing)
+                    {
+                        Thread.Sleep(100); // Chờ phát xong
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                AppendMessage($"Error playing audio: {ex.Message}");
+            }
+        }
+        private void PlayAudio(string filePath)
+        {
+            if (!File.Exists(filePath))
+            {
+                MessageBox.Show("File does not exist or cannot be found.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
+
+            try
+            {
+                using (var audioFile = new NAudio.Wave.AudioFileReader(filePath))
+                using (var outputDevice = new NAudio.Wave.WaveOutEvent())
+                {
+                    outputDevice.Init(audioFile);
+                    outputDevice.Play();
+                    while (outputDevice.PlaybackState == NAudio.Wave.PlaybackState.Playing)
+                    {
+                        Thread.Sleep(100);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error playing audio: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
 
 
     }
 }
-
